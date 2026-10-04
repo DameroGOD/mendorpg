@@ -56,6 +56,11 @@ Estos valores NO están en el HTML ni en el código: solo existen en Netlify.
 
 **Registro de cambios del servidor**
 - Botón **Registro de cambios** de la barra: **+ Nueva entrada**, escribí versión, fecha, título y los cambios (uno por línea) y **Guardar y publicar**.
+**Video del trailer**
+- Como admin, en el recuadro del trailer aparece **SUBIR VIDEO**. Elegí un archivo **MP4 (H.264) o WebM** de hasta **100 MB**; se sube en pedazos y muestra el avance.
+- El video llena todo el recuadro (si no es 16:9 se recortan un poco los bordes) y se publica al instante para todos. Con **CAMBIAR VIDEO** lo reemplazás y con **QUITAR** volvés al recuadro de “PLAY”.
+- El botón “VER TEASER” reproduce el video cuando hay uno cargado; su texto se cambia con el lápiz.
+
 4. Para cambiar la contraseña: modificá `ADMIN_PASS` en Netlify y hacé deploy. Para cerrar TODAS las sesiones abiertas: cambiá `SESSION_SECRET`.
 
 ## Seguridad (lo que ya está resuelto)

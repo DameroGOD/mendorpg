@@ -10,7 +10,7 @@
   const S = {
     admin: false, editing: false,
     saved: { texts: {}, links: {} }, cur: { texts: {}, links: {} },
-    posts: [], shown: 5, postsLoaded: false
+    posts: [], shown: 5, postsLoaded: false, trailer: null
   };
   let overlay = null, overlayDirty = false, bar = null, layer = null;
 
@@ -122,7 +122,7 @@
     S.admin = v;
     try { v ? localStorage.setItem(HINT, '1') : localStorage.removeItem(HINT); } catch (e) { /* sin almacenamiento */ }
     if (v) { S.editing = true; } else { S.editing = false; }
-    renderBar(); renderBlog(); syncEditMode();
+    renderBar(); renderBlog(); renderTrailer(); syncEditMode();
   }
   function sessionExpired(msg) {
     setAdmin(false);
@@ -570,6 +570,83 @@
     setTimeout(() => titulo.focus(), 30);
   }
 
+  /* ---------- trailer: video del reino (el admin lo sube, todos lo ven) ---------- */
+  let trRoot = null, trBusy = false;
+  const TR_MAX = 100 * 1024 * 1024; // igual que el servidor
+  function ensureTrailerRoot() {
+    const r = document.getElementById('mendo-trailer-root');
+    if (r && r !== trRoot) { trRoot = r; renderTrailer(); }
+  }
+  function renderTrailer() {
+    if (!trRoot || trBusy) return;
+    trRoot.innerHTML = '';
+    const t = S.trailer;
+    if (t) trRoot.appendChild(el('video', { id: 'mendo-trailer-video', class: 'tr-video', src: '/api/trailer/video/' + t.id, controls: '', playsinline: '', preload: 'metadata' }));
+    if (!S.admin) return;
+    const file = el('input', { type: 'file', accept: 'video/mp4,video/webm,.mp4,.webm', style: 'display:none' });
+    file.addEventListener('change', () => { const f = file.files && file.files[0]; file.value = ''; if (f) uploadTrailer(f); });
+    const btns = [el('button', { class: 'ma-btn small', type: 'button', text: t ? 'CAMBIAR VIDEO' : 'SUBIR VIDEO', onclick: () => file.click() })];
+    if (t) btns.push(el('button', { class: 'ma-btn small danger', type: 'button', text: 'QUITAR', onclick: removeTrailer }));
+    trRoot.appendChild(el('div', { class: 'tr-admin ma-ui' + (t ? '' : ' empty') }, btns.concat([file])));
+  }
+  function loadTrailer() {
+    api('/api/trailer').then(r => { if (r.ok) S.trailer = r.data.trailer || null; renderTrailer(); }).catch(() => {});
+  }
+  const trNeed = r => {
+    if (r.status === 401) { const e = new Error('Tu sesión venció.'); e.expired = true; throw e; }
+    if (!r.ok) throw new Error((r.data && r.data.error) || 'Error del servidor.');
+    return r;
+  };
+  // Un pedazo del video; se usa XMLHttpRequest para poder mostrar el avance de la subida.
+  function putChunk(id, i, blob, onP) {
+    return new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('PUT', '/api/trailer?action=chunk&id=' + id + '&i=' + i);
+      x.setRequestHeader('content-type', 'application/octet-stream');
+      x.upload.onprogress = e => { if (e.lengthComputable) onP(e.loaded / e.total); };
+      x.onerror = x.ontimeout = () => reject(new Error('Se cortó la conexión.'));
+      x.onload = () => { let d = {}; try { d = JSON.parse(x.responseText); } catch (e) { /* sin cuerpo */ } resolve({ status: x.status, ok: x.status >= 200 && x.status < 300, data: d }); };
+      x.send(blob);
+    });
+  }
+  async function uploadTrailer(f) {
+    if (trBusy || !trRoot) return;
+    trBusy = true;
+    const label = el('div', { class: 'ma-msg', text: 'Preparando…' });
+    const fill = el('i');
+    const bar = el('div', { class: 'tr-bar' }, [fill]);
+    const box = el('div', { class: 'tr-up ma-ui' }, [label, bar]);
+    trRoot.appendChild(box);
+    try {
+      if (!/\.(mp4|webm)$/i.test(f.name)) throw new Error('Formato no permitido. Usá MP4 o WebM.');
+      if (f.size > TR_MAX) throw new Error('El video pesa ' + Math.ceil(f.size / 1048576) + ' MB; el máximo es ' + (TR_MAX / 1048576) + ' MB.');
+      const st = trNeed(await api('/api/trailer?action=start', { method: 'POST', json: { size: f.size } })).data;
+      const prog = p => { const v = Math.round(p * 100); fill.style.width = v + '%'; label.textContent = 'Subiendo video… ' + v + '%'; };
+      for (let i = 0; i < st.n; i++) {
+        const blob = f.slice(i * st.chunk, (i + 1) * st.chunk);
+        let r;
+        try { r = await putChunk(st.id, i, blob, q => prog((i + q) / st.n)); } catch (e) { r = await putChunk(st.id, i, blob, q => prog((i + q) / st.n)); } // un reintento si se corta
+        trNeed(r);
+      }
+      label.textContent = 'Terminando…';
+      S.trailer = trNeed(await api('/api/trailer?action=finish', { method: 'POST', json: { id: st.id } })).data.trailer;
+      trBusy = false; renderTrailer(); barMsg('Video del trailer publicado ✓', 'ok');
+    } catch (e) {
+      trBusy = false;
+      if (e.expired) { box.remove(); return sessionExpired('Tu sesión venció. Volvé a entrar y subí el video de nuevo.'); }
+      bar.remove(); label.className = 'ma-msg err'; label.textContent = e.message || 'No se pudo subir el video.';
+      setTimeout(() => box.remove(), 6000);
+    }
+  }
+  function removeTrailer() {
+    if (!window.confirm('¿Quitar el video del trailer? La página vuelve a mostrar el recuadro de “PLAY”.')) return;
+    api('/api/trailer', { method: 'DELETE' }).then(r => {
+      if (r.status === 401) return sessionExpired();
+      if (!r.ok) return barMsg((r.data && r.data.error) || 'No se pudo quitar el video.', 'err');
+      S.trailer = null; renderTrailer(); barMsg('Video quitado', 'ok');
+    }).catch(() => barMsg('No se pudo conectar con el servidor.', 'err'));
+  }
+
   /* ---------- arranque ---------- */
   function applyContent(c) {
     S.saved = { texts: (c && c.texts) || {}, links: (c && c.links) || {} };
@@ -591,7 +668,7 @@
     for (const m of muts) {
       const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
       if (t && t.closest && t.closest('.ma-ui,.ma-pencil-layer,.cr-lightbox')) continue;
-      scheduleScan(); ensureBlogRoot(); return;
+      scheduleScan(); ensureBlogRoot(); ensureTrailerRoot(); return;
     }
   });
   function start() {
@@ -600,8 +677,8 @@
     window.addEventListener('resize', scheduleLayout);
     if (window.ResizeObserver) new ResizeObserver(scheduleLayout).observe(document.body);
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && overlay) closeOverlay(); });
-    ensureBlogRoot(); scheduleScan();
-    loadContent(); loadPosts();
+    ensureBlogRoot(); ensureTrailerRoot(); scheduleScan();
+    loadContent(); loadPosts(); loadTrailer();
     let hint = null; try { hint = localStorage.getItem(HINT); } catch (e) { /* nada */ }
     if (hint) api('/api/session').then(r => { if (r.ok && r.data.admin) setAdmin(true); else { try { localStorage.removeItem(HINT); } catch (e) { /* nada */ } } }).catch(() => {});
   }
